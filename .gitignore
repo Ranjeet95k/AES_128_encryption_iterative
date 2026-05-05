@@ -1,0 +1,49 @@
+# Vivado Generated Files
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+
+.Xil/
+Xil/
+
+xsim.dir/
+*.wdb
+*.wcfg
+*.log
+*.jou
+*.str
+
+*.rpt
+*.pb
+
+*.backup
+*.backup.jou
+
+vivado.log
+vivado.jou
+vivado_pid*.str
+
+ip_cache/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Output folder
+result/
+
+# Keep important files
+!*.v
+!*.sv
+!*.vhd
+!*.xdc
+!*.tcl
+!*.py
+!*.xpr

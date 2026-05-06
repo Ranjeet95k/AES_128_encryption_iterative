@@ -1,0 +1,6 @@
+read_verilog AES128_iterative_encryption.srcs/sources_1/imports/v1_sources_files_new/forward_substitution_box_local.v
+read_verilog AES128_iterative_encryption.srcs/sources_1/imports/v1_sources_files_new/AES128_ENCRYPT_ITERATIVE.v
+read_xdc AES128_iterative_encryption.srcs/constrs_1/new/basys3_uart.xdc
+synth_design -top AES128_ENCRYPT_UART_WRAPPER -part xc7a35tcpg236-1
+report_drc -file direct_synth_drc.rpt
+report_timing_summary -file direct_synth_timing_summary.rpt

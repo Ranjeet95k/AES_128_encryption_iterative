@@ -458,18 +458,21 @@ module AES128_ENCRYPT_UART_WRAPPER #(
     parameter CLKS_PER_BIT = 868,
     parameter AES_WAIT_CYCLES = 140
 )(
-    input clk,
+    input clk_fpga,
+    input reset,
     input rx,
-    output tx
+    output tx,
+    output reg [7:0] leds = 8'd0,
+    output reg done_led = 1'b0
 );
 
-localparam [2:0] WRAP_RX_COLLECT = 3'd0;
-localparam [2:0] WRAP_AES_WAIT   = 3'd1;
-localparam [2:0] WRAP_TX_LOAD    = 3'd2;
-localparam [2:0] WRAP_TX_START   = 3'd3;
-localparam [2:0] WRAP_TX_WAIT    = 3'd4;
+localparam [2:0] IDLE     = 3'd0;
+localparam [2:0] RECEIVE  = 3'd1;
+localparam [2:0] WAIT_AES = 3'd2;
+localparam [2:0] SEND     = 3'd3;
+localparam [2:0] DONE     = 3'd4;
 
-reg [2:0] wrapper_state = WRAP_RX_COLLECT;
+reg [2:0] state = IDLE;
 
 wire [7:0] rx_data;
 wire rx_done;
@@ -479,7 +482,8 @@ wire tx_busy;
 
 reg [127:0] plaintext_shift = 128'd0;
 reg [127:0] key_shift = 128'd0;
-reg [127:0] cipher_shift = 128'd0;
+reg [127:0] expected_shift = 128'd0;
+reg [127:0] ciphertext_latched = 128'd0;
 reg [127:0] aes_in_data = 128'd0;
 reg [127:0] aes_in_key = 128'd0;
 wire [127:0] aes_out_data;
@@ -487,11 +491,12 @@ wire [127:0] aes_out_data;
 reg [5:0] rx_count = 6'd0;
 reg [4:0] tx_count = 5'd0;
 reg [15:0] aes_wait_count = 16'd0;
+reg tx_was_busy = 1'b0;
 
 uart_rx #(
     .CLKS_PER_BIT(CLKS_PER_BIT)
 ) uart_rx_inst (
-    .clk(clk),
+    .clk(clk_fpga),
     .rx(rx),
     .data_out(rx_data),
     .done(rx_done)
@@ -500,7 +505,7 @@ uart_rx #(
 uart_tx #(
     .CLKS_PER_BIT(CLKS_PER_BIT)
 ) uart_tx_inst (
-    .clk(clk),
+    .clk(clk_fpga),
     .start(tx_start),
     .data_in(tx_data),
     .tx(tx),
@@ -508,77 +513,114 @@ uart_tx #(
 );
 
 AES128_ENCRYPT_ITERATIVE aes_core (
-    .clk(clk),
+    .clk(clk_fpga),
     .IN_DATA(aes_in_data),
     .IN_KEY(aes_in_key),
     .OUT_DATA(aes_out_data)
 );
 
-always @(posedge clk) begin
+always @(posedge clk_fpga) begin
     tx_start <= 1'b0;
+    tx_was_busy <= tx_busy;
 
-    case (wrapper_state)
-        WRAP_RX_COLLECT: begin
-            if (rx_done) begin
-                if (rx_count < 6'd16) begin
-                    plaintext_shift <= {plaintext_shift[119:0], rx_data};
-                    rx_count <= rx_count + 1'b1;
-                end
-                else if (rx_count < 6'd31) begin
-                    key_shift <= {key_shift[119:0], rx_data};
-                    rx_count <= rx_count + 1'b1;
-                end
-                else begin
-                    key_shift <= {key_shift[119:0], rx_data};
-                    aes_in_data <= plaintext_shift;
-                    aes_in_key <= {key_shift[119:0], rx_data};
-                    rx_count <= 6'd0;
-                    aes_wait_count <= 16'd0;
-                    wrapper_state <= WRAP_AES_WAIT;
-                end
-            end
-        end
-
-        WRAP_AES_WAIT: begin
-            if (aes_wait_count == AES_WAIT_CYCLES - 1) begin
-                cipher_shift <= aes_out_data;
+    if (reset) begin
+        state <= IDLE;
+        tx_start <= 1'b0;
+        tx_data <= 8'd0;
+        plaintext_shift <= 128'd0;
+        key_shift <= 128'd0;
+        expected_shift <= 128'd0;
+        ciphertext_latched <= 128'd0;
+        aes_in_data <= 128'd0;
+        aes_in_key <= 128'd0;
+        rx_count <= 6'd0;
+        tx_count <= 5'd0;
+        aes_wait_count <= 16'd0;
+        tx_was_busy <= 1'b0;
+        leds <= 8'd0;
+        done_led <= 1'b0;
+    end else begin
+        case (state)
+            IDLE: begin
+                rx_count <= 6'd0;
                 tx_count <= 5'd0;
-                wrapper_state <= WRAP_TX_LOAD;
+                aes_wait_count <= 16'd0;
+                plaintext_shift <= 128'd0;
+                key_shift <= 128'd0;
+                expected_shift <= 128'd0;
+                done_led <= 1'b0;
+                state <= RECEIVE;
             end
-            else begin
-                aes_wait_count <= aes_wait_count + 1'b1;
-            end
-        end
 
-        WRAP_TX_LOAD: begin
-            if (!tx_busy) begin
-                tx_data <= cipher_shift[127:120];
-                tx_start <= 1'b1;
-                wrapper_state <= WRAP_TX_START;
-            end
-        end
+            RECEIVE: begin
+                if (rx_done) begin
+                    leds <= rx_data;
 
-        WRAP_TX_START: begin
-            wrapper_state <= WRAP_TX_WAIT;
-        end
+                    if (rx_count < 6'd16) begin
+                        plaintext_shift <= {plaintext_shift[119:0], rx_data};
+                    end else if (rx_count < 6'd32) begin
+                        key_shift <= {key_shift[119:0], rx_data};
+                    end else begin
+                        expected_shift <= {expected_shift[119:0], rx_data};
+                    end
 
-        WRAP_TX_WAIT: begin
-            if (!tx_busy) begin
-                if (tx_count == 5'd15) begin
-                    wrapper_state <= WRAP_RX_COLLECT;
+                    if (rx_count == 6'd47) begin
+                        aes_in_data <= plaintext_shift;
+                        aes_in_key <= key_shift;
+                        rx_count <= 6'd0;
+                        aes_wait_count <= 16'd0;
+                        state <= WAIT_AES;
+                    end else begin
+                        rx_count <= rx_count + 1'b1;
+                    end
                 end
-                else begin
-                    cipher_shift <= {cipher_shift[119:0], 8'h00};
-                    tx_count <= tx_count + 1'b1;
-                    wrapper_state <= WRAP_TX_LOAD;
+            end
+
+            WAIT_AES: begin
+                if (aes_wait_count == AES_WAIT_CYCLES - 1) begin
+                    ciphertext_latched <= aes_out_data;
+                    tx_count <= 5'd0;
+                    state <= SEND;
+                end else begin
+                    aes_wait_count <= aes_wait_count + 1'b1;
                 end
             end
-        end
 
-        default: begin
-            wrapper_state <= WRAP_RX_COLLECT;
-        end
-    endcase
+            SEND: begin
+                if (!tx_busy && !tx_was_busy && !tx_start) begin
+                    tx_data <= ciphertext_latched[127 - (tx_count * 8) -: 8];
+                    leds <= ciphertext_latched[127 - (tx_count * 8) -: 8];
+                    tx_start <= 1'b1;
+                end else if (tx_was_busy && !tx_busy) begin
+                    if (tx_count == 5'd15) begin
+                        done_led <= (ciphertext_latched == expected_shift);
+                        state <= DONE;
+                    end else begin
+                        tx_count <= tx_count + 1'b1;
+                    end
+                end
+            end
+
+            DONE: begin
+                if (rx_done) begin
+                    leds <= rx_data;
+                    plaintext_shift <= {120'd0, rx_data};
+                    key_shift <= 128'd0;
+                    expected_shift <= 128'd0;
+                    ciphertext_latched <= 128'd0;
+                    rx_count <= 6'd1;
+                    tx_count <= 5'd0;
+                    aes_wait_count <= 16'd0;
+                    done_led <= 1'b0;
+                    state <= RECEIVE;
+                end
+            end
+
+            default: begin
+                state <= IDLE;
+            end
+        endcase
+    end
 end
 
 endmodule
